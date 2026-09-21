@@ -311,15 +311,23 @@ export async function processCheckout({ url, card, proxy }) {
     '--disable-web-security',
     '--disable-features=IsolateOrigins,site-per-process',
     '--window-size=1280,800',
+    '--disable-gpu',
+    '--no-zygote',
+    '--mute-audio',
+    '--disable-extensions',
   ];
 
   const playwrightProxy = proxy ? toPlaywrightProxy(proxy) : undefined;
 
-  const browser = await chromium.launch({
-    headless : true,
-    args     : launchArgs,
-    proxy    : playwrightProxy,
-  });
+  const browser = await Promise.race([
+    chromium.launch({
+      headless : true,
+      args     : launchArgs,
+      proxy    : playwrightProxy,
+      timeout  : 45000,
+    }),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('Browser launch timed out (45s)')), 47000)),
+  ]);
 
   const context = await browser.newContext({
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -423,6 +431,6 @@ export async function processCheckout({ url, card, proxy }) {
     return { status: 'error', message: err.message, screenshot, url: page.url() };
 
   } finally {
-    await browser.close();
+    try { await Promise.race([browser.close(), new Promise(r => setTimeout(r, 8000))]); } catch {}
   }
 }
