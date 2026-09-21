@@ -1,17 +1,20 @@
-# ⚡ ALPHA Worker — Playwright + Node on Railway
-# Uses Microsoft's official Playwright image (all browser deps pre-installed)
-FROM mcr.microsoft.com/playwright:v1.40.0-jammy
+# ⚡ ALPHA Worker — Node 22 + Playwright + Chromium
+# Node 22 required: @supabase/realtime-js needs native WebSocket (Node >= 22)
+
+FROM node:22-bookworm-slim
 
 WORKDIR /app
 
-# Install dependencies
+# Install npm dependencies
 COPY package*.json ./
 RUN npm install
+
+# Install Chromium browser + its OS dependencies
+RUN npx playwright install --with-deps chromium
 
 # Copy source
 COPY . .
 
-# Railway injects PORT env var
 ENV NODE_ENV=production
 EXPOSE 3000
 
