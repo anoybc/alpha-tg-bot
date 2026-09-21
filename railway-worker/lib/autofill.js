@@ -46,6 +46,28 @@ const CVC_SELECTORS = [
   'input[placeholder*="security code" i]', 'input[placeholder*="3-digit" i]',
 ];
 
+const NAME_SELECTORS = [
+  '[data-elements-stable-field-name="cardholderName"] input',
+  '[data-elements-stable-field-name="cardholderName"]',
+  'input[name="cardholderName"]', 'input[name="cardholder_name"]',
+  'input[name="fullName"]', 'input[name="fullname"]', 'input[name="name"]',
+  '#cardholderName', '#fullname', '#name-on-card', '#cc-name',
+  'input[autocomplete="cc-name"]',
+  'input[placeholder*="Full name" i]', 'input[placeholder*="Name on card" i]',
+  'input[placeholder*="Cardholder" i]',
+];
+
+const ZIP_SELECTORS = [
+  '[data-elements-stable-field-name="postalCode"] input',
+  '[data-elements-stable-field-name="postalCode"]',
+  'input[name="postalCode"]', 'input[name="postal_code"]',
+  'input[name="billingPostalCode"]', 'input[name="billing_postcode"]',
+  'input[name="zip"]', '#postalCode', '#postcode', '#zip', '#billing-zip',
+  'input[autocomplete="postal-code"]',
+  'input[placeholder*="ZIP" i]', 'input[placeholder*="Postal" i]',
+  'input[placeholder*="Postcode" i]',
+];
+
 const SUBMIT_SELECTORS = [
   '[data-testid="hosted-payment-submit-button"]',
   'button[type="submit"]',
@@ -70,6 +92,19 @@ async function typeNatural(page, value, delayMs = 45) {
     await page.keyboard.type(ch);
     await page.waitForTimeout(delayMs + Math.random() * 35);
   }
+}
+
+// ── Random name / ZIP generators ─────────────────────────────────────────────
+const FIRST_NAMES = ['James','Mary','John','Patricia','Robert','Jennifer','Michael','Linda','David','Elizabeth','William','Susan','Richard','Jessica','Charles','Sarah'];
+const LAST_NAMES  = ['Smith','Johnson','Williams','Brown','Jones','Garcia','Miller','Davis','Rodriguez','Martinez','Hernandez','Lopez','Gonzalez','Wilson','Anderson','Taylor'];
+
+function randomName() {
+  return FIRST_NAMES[Math.floor(Math.random() * FIRST_NAMES.length)] + ' ' +
+         LAST_NAMES[Math.floor(Math.random() * LAST_NAMES.length)];
+}
+
+function randomZip() {
+  return String(10000 + Math.floor(Math.random() * 90000));
 }
 
 // ── Find first visible element from a selector list ───────────────────────────
@@ -164,6 +199,12 @@ async function fillStripeHosted(page, card) {
   await page.waitForTimeout(300);
   ok = await fillField(page, CVC_SELECTORS, card.cvc)            || ok;
 
+  // Cardholder name + ZIP (required before most Stripe Checkout forms validate)
+  await page.waitForTimeout(250);
+  ok = await fillField(page, NAME_SELECTORS, randomName())       || ok;
+  await page.waitForTimeout(250);
+  ok = await fillField(page, ZIP_SELECTORS, randomZip())         || ok;
+
   // If direct fill failed, try iframes (some Stripe hosted pages use them)
   if (!ok) {
     ok = await fillStripeIframes(page, card);
@@ -179,6 +220,12 @@ async function fillGeneric(page, card) {
   ok = await fillField(page, EXPIRY_SELECTORS, card.expiry)      || ok;
   await page.waitForTimeout(300);
   ok = await fillField(page, CVC_SELECTORS, card.cvc)            || ok;
+
+  // Cardholder name + ZIP
+  await page.waitForTimeout(250);
+  ok = await fillField(page, NAME_SELECTORS, randomName())       || ok;
+  await page.waitForTimeout(250);
+  ok = await fillField(page, ZIP_SELECTORS, randomZip())         || ok;
 
   // Fallback — try Stripe iframes embedded in the merchant page
   if (!ok) {
