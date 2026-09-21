@@ -132,6 +132,44 @@ async function fillField(page, selectors, value) {
   return true;
 }
 
+// ── JS heuristic fallback (React/Stripe-compatible native value setter) ───────
+const NAME_PATTERNS = [/name on card/i, /full name/i, /cardholder/i, /cc-name/i, /billing.?name/i, /fullname/i];
+const ZIP_PATTERNS  = [/postal.?code/i, /postcode/i, /\bzip\b/i, /postal.?zip/i];
+
+async function fillInputByHeuristic(page, patterns, value) {
+  try {
+    return await page.evaluate(({ srcs, value }) => {
+      const regexes  = srcs.map(s => new RegExp(s, 'i'));
+      const isVisible = el => {
+        const r  = el.getBoundingClientRect();
+        const cs = getComputedStyle(el);
+        return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none';
+      };
+      const inputs = Array.from(document.querySelectorAll('input'));
+      const el = inputs.find(inp => {
+        if (!isVisible(inp)) return false;
+        const hay = [inp.getAttribute('placeholder'), inp.getAttribute('name'),
+                     inp.getAttribute('autocomplete'), inp.getAttribute('id'),
+                     inp.getAttribute('aria-label'), inp.getAttribute('title')]
+                      .filter(Boolean).join(' ');
+        return regexes.some(re => re.test(hay));
+      });
+      if (!el) return false;
+      el.focus();
+      const proto  = Object.getPrototypeOf(el);
+      const desc   = Object.getOwnPropertyDescriptor(proto, 'value');
+      const setter = desc && desc.set ? desc.set : null;
+      if (setter) setter.call(el, value); else el.value = value;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      el.blur();
+      return true;
+    }, { srcs: patterns.map(p => p.source), value });
+  } catch {
+    return false;
+  }
+}
+
 // ── Stripe iframe filler ───────────────────────────────────────────────────────
 // Stripe renders card fields in separate iframes; we must enter each one.
 async function fillStripeIframes(page, card) {
@@ -200,10 +238,15 @@ async function fillStripeHosted(page, card) {
   ok = await fillField(page, CVC_SELECTORS, card.cvc)            || ok;
 
   // Cardholder name + ZIP (required before most Stripe Checkout forms validate)
-  await page.waitForTimeout(250);
-  ok = await fillField(page, NAME_SELECTORS, randomName())       || ok;
-  await page.waitForTimeout(250);
-  ok = await fillField(page, ZIP_SELECTORS, randomZip())         || ok;
+  const nm = randomName(), zp = randomZip();
+  let nameOk = await fillField(page, NAME_SELECTORS, nm);
+  if (!nameOk) nameOk = await fillInputByHeuristic(page, NAME_PATTERNS, nm);
+  console.log('[Autofill] name filled:', nameOk);
+  await page.waitForTimeout(200);
+  let zipOk = await fillField(page, ZIP_SELECTORS, zp);
+  if (!zipOk) zipOk = await fillInputByHeuristic(page, ZIP_PATTERNS, zp);
+  console.log('[Autofill] zip filled:', zipOk);
+  await page.waitForTimeout(200);
 
   // If direct fill failed, try iframes (some Stripe hosted pages use them)
   if (!ok) {
@@ -222,10 +265,15 @@ async function fillGeneric(page, card) {
   ok = await fillField(page, CVC_SELECTORS, card.cvc)            || ok;
 
   // Cardholder name + ZIP
-  await page.waitForTimeout(250);
-  ok = await fillField(page, NAME_SELECTORS, randomName())       || ok;
-  await page.waitForTimeout(250);
-  ok = await fillField(page, ZIP_SELECTORS, randomZip())         || ok;
+  const nm = randomName(), zp = randomZip();
+  let nameOk = await fillField(page, NAME_SELECTORS, nm);
+  if (!nameOk) nameOk = await fillInputByHeuristic(page, NAME_PATTERNS, nm);
+  console.log('[Autofill] name filled:', nameOk);
+  await page.waitForTimeout(200);
+  let zipOk = await fillField(page, ZIP_SELECTORS, zp);
+  if (!zipOk) zipOk = await fillInputByHeuristic(page, ZIP_PATTERNS, zp);
+  console.log('[Autofill] zip filled:', zipOk);
+  await page.waitForTimeout(200);
 
   // Fallback — try Stripe iframes embedded in the merchant page
   if (!ok) {
@@ -294,6 +342,7 @@ export async function processCheckout({ url, card, proxy }) {
   const page = await context.newPage();
 
   try {
+    console.log('[Autofill] engine v2.1 (name+ZIP heuristic fill)');
     console.log(`[Autofill] Opening ${url}`);
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await page.waitForTimeout(2000 + Math.random() * 1000);
