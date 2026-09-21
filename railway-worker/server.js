@@ -10,6 +10,10 @@ import { sendResult, sendAttemptUpdate, sendMessage, maskNumber } from './lib/te
 const app           = express();
 const WORKER_SECRET = process.env.WORKER_SECRET;
 
+// Single-flight guard: only one checkout at a time (prevents Chromium pile-up
+// and out-of-memory on small instances).
+let _busy = false;
+
 app.use(express.json({ limit: '4mb' }));
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
@@ -76,6 +80,15 @@ app.post('/process-checkout', auth, async (req, res) => {
   if (!checkout_url || !cardList.length) {
     return res.status(400).json({ error: 'Missing checkout_url or cards' });
   }
+
+  // Reject if another checkout is already running
+  if (_busy) {
+    res.json({ ok: true });
+    sendMessage(chat_id, '⏳ Worker is busy with another checkout. Try again in a minute.').catch(() => {});
+    return;
+  }
+
+  _busy = true;
 
   // Acknowledge immediately — Railway processes async with no timeout
   res.json({ ok: true });
@@ -179,6 +192,8 @@ app.post('/process-checkout', auth, async (req, res) => {
     try {
       await sendMessage(chat_id, `❌ <b>Worker error:</b> ${err.message || 'Unknown error'}`);
     } catch {}
+  }).finally(() => {
+    _busy = false;
   });
 });
 
