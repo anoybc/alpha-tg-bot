@@ -26,7 +26,7 @@ function auth(req, res, next) {
 }
 
 // ── Health ────────────────────────────────────────────────────────────────────
-app.get('/', (_req, res) => res.json({ ok: true, service: '⚡ ALPHA Worker v5', ts: Date.now() }));
+app.get('/', (_req, res) => res.json({ ok: true, service: '⚡ ALPHA Worker v6', ts: Date.now() }));
 
 // ── POST /validate-proxy ──────────────────────────────────────────────────────
 app.post('/validate-proxy', auth, async (req, res) => {
@@ -104,11 +104,25 @@ app.post('/process-checkout', auth, async (req, res) => {
 
   // ── Async rotation loop ────────────────────────────────────────────────────
   ;(async () => {
-    const total      = cardList.length;
-    const proxy      = await getNextProxy(telegram_id);
+    // Immediate visible confirmation that the worker received the job
+    try { await sendMessage(chat_id, '🔄 <b>Worker received</b> — starting…'); } catch {}
+
+    const total = cardList.length;
+
+    // Proxy lookup is itself time-bounded (Supabase query)
+    let proxy = null;
+    try {
+      proxy = await withTimeout(getNextProxy(telegram_id), 15000, 'Proxy lookup');
+    } catch (e) {
+      console.warn('[Worker] proxy lookup failed, using direct:', e.message);
+      proxy = null;
+    }
     const proxyLabel = proxy ? `${proxy.host}:${proxy.port}` : 'direct';
 
     console.log(`[Worker] ${total} card(s) | proxy: ${proxyLabel} | url: ${checkout_url}`);
+
+    // Visible progress: got past proxy lookup, now launching the browser
+    try { await sendMessage(chat_id, '🚀 Opening checkout in headless browser…'); } catch {}
 
     let attemptNum = 0;
 
