@@ -26,7 +26,7 @@ function auth(req, res, next) {
 }
 
 // ── Health ────────────────────────────────────────────────────────────────────
-app.get('/', (_req, res) => res.json({ ok: true, service: '⚡ ALPHA Worker v3', ts: Date.now() }));
+app.get('/', (_req, res) => res.json({ ok: true, service: '⚡ ALPHA Worker v5', ts: Date.now() }));
 
 // ── POST /validate-proxy ──────────────────────────────────────────────────────
 app.post('/validate-proxy', auth, async (req, res) => {
@@ -65,12 +65,21 @@ app.post('/validate-proxy', auth, async (req, res) => {
   res.json(result);
 });
 
+// ── Hard timing wrapper: guarantees an await never hangs forever ──────────────
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, rej) => setTimeout(() => rej(new Error(`${label} timed out after ${Math.round(ms / 1000)}s`)), ms)),
+  ]);
+}
+
 // ── POST /process-checkout ────────────────────────────────────────────────────
 // Body: { checkout_url, cards: [...], telegram_id, chat_id }
 // "cards" is an ordered array; worker tries each in sequence until a hit.
 // Responds 200 immediately so Vercel (10 s limit) doesn't time out.
 app.post('/process-checkout', auth, async (req, res) => {
   const { checkout_url, cards, card, telegram_id, chat_id } = req.body;
+  console.log('[Worker] /process-checkout received for user', telegram_id);
 
   // Support legacy single-card calls too
   const cardList = Array.isArray(cards) && cards.length
@@ -113,9 +122,13 @@ app.post('/process-checkout', auth, async (req, res) => {
       // ── Run Playwright checkout ──────────────────────────────────────────
       let result;
       try {
-        result = await processCheckout({ url: checkout_url, card, proxy });
+        result = await withTimeout(
+          processCheckout({ url: checkout_url, card, proxy }),
+          75000,
+          'Checkout'
+        );
       } catch (err) {
-        console.error(`[Worker] processCheckout threw:`, err.message);
+        console.error(`[Worker] processCheckout threw/timed out:`, err.message);
         result = { status: 'error', message: err.message, screenshot: null, url: checkout_url };
       }
 
