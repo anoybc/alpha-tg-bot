@@ -33,21 +33,25 @@ app.post('/validate-proxy', auth, async (req, res) => {
   const result = await validateProxy(proxy);
 
   if (result.valid) {
-    await supabase.from('proxies').insert({
-      telegram_id,
-      host           : proxy.host,
-      port           : proxy.port,
-      username       : proxy.username || null,
-      password       : proxy.password || null,
-      country        : result.country,
-      city           : result.city,
-      isp            : result.isp,
-      ip             : result.ip,
-      valid          : true,
-      active         : true,
-      fail_count     : 0,
-      last_validated : new Date().toISOString(),
-    }).catch(e => console.error('[ValidateProxy] DB error:', e.message));
+    try {
+      await supabase.from('proxies').insert({
+        telegram_id,
+        host           : proxy.host,
+        port           : proxy.port,
+        username       : proxy.username || null,
+        password       : proxy.password || null,
+        country        : result.country,
+        city           : result.city,
+        isp            : result.isp,
+        ip             : result.ip,
+        valid          : true,
+        active         : true,
+        fail_count     : 0,
+        last_validated : new Date().toISOString(),
+      });
+    } catch (e) {
+      console.error('[ValidateProxy] DB error:', e.message);
+    }
 
     console.log(`[ValidateProxy] ✅ Saved ${proxy.host}:${proxy.port} (${result.country})`);
   } else {
@@ -103,15 +107,19 @@ app.post('/process-checkout', auth, async (req, res) => {
       }
 
       // ── Log every attempt to Supabase ────────────────────────────────────
-      await supabase.from('hits').insert({
-        telegram_id,
-        checkout_url,
-        card_bin  : card.number.slice(0, 6),
-        card_last4: card.number.slice(-4),
-        status    : result.status,
-        response_text: result.message,
-        proxy_used: proxyLabel,
-      }).catch(e => console.warn('[Worker] Hit log error:', e.message));
+      try {
+        await supabase.from('hits').insert({
+          telegram_id,
+          checkout_url,
+          card_bin  : card.number.slice(0, 6),
+          card_last4: card.number.slice(-4),
+          status    : result.status,
+          response_text: result.message,
+          proxy_used: proxyLabel,
+        });
+      } catch (e) {
+        console.warn('[Worker] Hit log error:', e.message);
+      }
 
       // ── HIT → send final result and stop ────────────────────────────────
       if (result.status === 'hit') {
@@ -143,10 +151,11 @@ app.post('/process-checkout', auth, async (req, res) => {
         // Also mark proxy as failed if the error looks proxy-related
         if (proxy && result.status === 'error' && /proxy|connect|ECONNREFUSED|timeout/i.test(result.message)) {
           const newFails = (proxy.fail_count || 0) + 1;
-          await supabase.from('proxies')
-            .update({ fail_count: newFails, active: newFails < 3 })
-            .eq('id', proxy.id)
-            .catch(() => {});
+          try {
+            await supabase.from('proxies')
+              .update({ fail_count: newFails, active: newFails < 3 })
+              .eq('id', proxy.id);
+          } catch {}
         }
 
         // Brief pause before next attempt (avoid hammering the checkout server)
